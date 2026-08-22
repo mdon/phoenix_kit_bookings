@@ -104,11 +104,26 @@ defmodule PhoenixKitBookings.Web.Admin.BookingsLive do
     total = counts |> Map.values() |> Enum.sum()
 
     [
-      {"upcoming", gettext("Upcoming"), nil},
-      {"pending", gettext("Pending"), Map.get(counts, "pending", 0)},
-      {"confirmed", gettext("Confirmed"), Map.get(counts, "confirmed", 0)},
-      {"cancelled", gettext("Cancelled"), Map.get(counts, "cancelled", 0)},
-      {"all", gettext("All"), total}
+      %{id: "upcoming", label: gettext("Upcoming"), badge: nil, patch: filter_patch("upcoming")},
+      %{
+        id: "pending",
+        label: gettext("Pending"),
+        badge: Map.get(counts, "pending", 0),
+        patch: filter_patch("pending")
+      },
+      %{
+        id: "confirmed",
+        label: gettext("Confirmed"),
+        badge: Map.get(counts, "confirmed", 0),
+        patch: filter_patch("confirmed")
+      },
+      %{
+        id: "cancelled",
+        label: gettext("Cancelled"),
+        badge: Map.get(counts, "cancelled", 0),
+        patch: filter_patch("cancelled")
+      },
+      %{id: "all", label: gettext("All"), badge: total, patch: filter_patch("all")}
     ]
   end
 
@@ -123,17 +138,10 @@ defmodule PhoenixKitBookings.Web.Admin.BookingsLive do
         </p>
       </div>
 
-      <div role="tablist" class="tabs tabs-box w-fit">
-        <.link
-          :for={{key, label, count} <- filter_tabs(@counts)}
-          patch={filter_patch(key)}
-          role="tab"
-          class={["tab", @filter == key && "tab-active"]}
-        >
-          {label}
-          <span :if={count} class="badge badge-sm ml-2">{count}</span>
-        </.link>
-      </div>
+      <%!-- Core's <.nav_tabs>, boxed like before. filter_patch/1 URLs are
+           already prefixed — :patch passes through verbatim, so the helper
+           stays exactly as it was. --%>
+      <.nav_tabs class="w-fit" active_tab={@filter} tabs={filter_tabs(@counts)} />
 
       <div class="card bg-base-100 shadow-lg overflow-x-auto">
         <table class="table">

@@ -116,10 +116,25 @@ defmodule PhoenixKitBookings.Web.Admin.ServicesLive do
     total = counts |> Map.values() |> Enum.sum()
 
     [
-      {"all", gettext("All"), total},
-      {"active", gettext("Active"), Map.get(counts, "active", 0)},
-      {"inactive", gettext("Inactive"), Map.get(counts, "inactive", 0)},
-      {"trashed", gettext("Trash"), Map.get(counts, "trashed", 0)}
+      %{id: "all", label: gettext("All"), badge: total, patch: filter_patch("all")},
+      %{
+        id: "active",
+        label: gettext("Active"),
+        badge: Map.get(counts, "active", 0),
+        patch: filter_patch("active")
+      },
+      %{
+        id: "inactive",
+        label: gettext("Inactive"),
+        badge: Map.get(counts, "inactive", 0),
+        patch: filter_patch("inactive")
+      },
+      %{
+        id: "trashed",
+        label: gettext("Trash"),
+        badge: Map.get(counts, "trashed", 0),
+        patch: filter_patch("trashed")
+      }
     ]
   end
 
@@ -140,17 +155,10 @@ defmodule PhoenixKitBookings.Web.Admin.ServicesLive do
         </.link>
       </div>
 
-      <div role="tablist" class="tabs tabs-box w-fit">
-        <.link
-          :for={{key, label, count} <- filter_tabs(@counts)}
-          patch={filter_patch(key)}
-          role="tab"
-          class={["tab", @filter == key && "tab-active"]}
-        >
-          {label}
-          <span class="badge badge-sm ml-2">{count}</span>
-        </.link>
-      </div>
+      <%!-- Core's <.nav_tabs>, boxed like before. filter_patch/1 URLs are
+           already prefixed — :patch passes through verbatim, so the helper
+           stays exactly as it was. --%>
+      <.nav_tabs class="w-fit" active_tab={@filter} tabs={filter_tabs(@counts)} />
 
       <div class="card bg-base-100 shadow-lg overflow-x-auto">
         <table class="table">
