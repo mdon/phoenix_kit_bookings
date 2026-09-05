@@ -121,10 +121,35 @@ defmodule PhoenixKitBookings.EngineTest do
       slots = Engine.bookable_slots(service, [], ~D[2026-03-29], [], "Europe/Tallinn")
       by_start = Map.new(slots, fn {start_t, _end_t, status} -> {start_t, status} end)
 
+      assert by_start[~T[02:00:00]] == :available
+      # 02:30–03:00 ends exactly at the jump: still thirty minutes, fine
       assert by_start[~T[02:30:00]] == :available
       assert by_start[~T[03:00:00]] == :unavailable
       assert by_start[~T[03:30:00]] == :unavailable
       assert by_start[~T[04:00:00]] == :available
+
+      hour_slots =
+        Engine.bookable_slots(
+          minutes_service(duration: 60, slot_interval: 30),
+          [],
+          ~D[2026-03-29],
+          [],
+          "Europe/Tallinn"
+        )
+
+      hour_by_start = Map.new(hour_slots, fn {start_t, _end_t, status} -> {start_t, status} end)
+      assert hour_by_start[~T[02:00:00]] == :available
+      assert hour_by_start[~T[02:30:00]] == :unavailable
+      assert hour_by_start[~T[04:00:00]] == :available
+
+      # fall-back day (2026-10-25, 04:00 → 03:00): a slot starting in the
+      # repeated hour and ending after it would store ninety minutes
+      fall = Engine.bookable_slots(service, [], ~D[2026-10-25], [], "Europe/Tallinn")
+      fall_by_start = Map.new(fall, fn {start_t, _end_t, status} -> {start_t, status} end)
+      assert fall_by_start[~T[02:30:00]] == :available
+      assert fall_by_start[~T[03:00:00]] == :available
+      assert fall_by_start[~T[03:30:00]] == :unavailable
+      assert fall_by_start[~T[04:00:00]] == :available
 
       # The same grid on an ordinary day, or in a zone that never moves, is untouched.
       assert Engine.bookable_slots(service, [], ~D[2026-03-28], [], "Europe/Tallinn")

@@ -148,11 +148,12 @@ defmodule PhoenixKitBookings.Engine do
   Bookable slots of a minute service on a frame-local date:
   `[{start_time, end_time, :available | :booked | :unavailable}]`.
 
-  A wall clock the site's zone skips that day — 03:00–03:59 on the
-  spring-forward Sunday in a European zone — is `:unavailable`: the lib
-  builds the grid from minutes and does not know the day is 23 hours long,
-  and such a slot would otherwise resolve to the instant after the jump,
-  landing on top of the next slot (a 03:30–04:30 pick stored as 04:00–04:30).
+  A slot whose stored instants would not be as long as the slot says is
+  `:unavailable`: the lib builds the grid from minutes and does not know
+  the spring-forward Sunday is 23 hours long (03:00–03:59 never happens in
+  a European zone, so a 03:30–04:30 pick would be stored as 04:00–04:30 and
+  a 02:30–03:30 one as thirty minutes) or that the fall-back Sunday repeats
+  an hour.
   `tz` defaults to the site's setting; tests pass a zone explicitly.
   """
   def bookable_slots(service, rules, date, bookings, tz \\ site_tz())
@@ -171,19 +172,34 @@ defmodule PhoenixKitBookings.Engine do
       bookings_to_events(bookings, service)
     )
     |> Enum.map(fn {start_time, end_time, status} ->
-      if wall_clock_exists?(date, start_time, tz),
+      if slot_intact?(date, start_time, end_time, tz),
         do: {start_time, end_time, status},
         else: {start_time, end_time, :unavailable}
     end)
   end
 
-  # A wall clock exists in the zone when reading it and showing it again
-  # gives the same clock; one inside a spring-forward gap comes back an hour
-  # later.
-  defp wall_clock_exists?(date, time, tz) do
-    utc = from_frame(date, time, tz)
-    back = to_frame(utc, tz)
-    DateTime.to_date(back) == date and Time.compare(DateTime.to_time(back), time) == :eq
+  # A slot is intact when the instants its wall clocks resolve to are as far
+  # apart as the wall clocks say. On the spring-forward day a clock inside the
+  # gap resolves to the instant after the jump, so 03:00–03:30 collapses to
+  # nothing and 02:30–03:30 to thirty minutes — while 02:30–03:00 is fine,
+  # its end IS the jump. On the fall-back day a start in the repeated hour
+  # resolves to its first occurrence, so 03:30–04:00 would store ninety
+  # minutes. Either way the booking would not be the slot the customer saw.
+  defp slot_intact?(date, start_time, end_time, tz) do
+    # The end is on the next date when the slot crosses midnight.
+    end_date = if Time.compare(end_time, start_time) == :gt, do: date, else: Date.add(date, 1)
+
+    nominal =
+      NaiveDateTime.diff(
+        NaiveDateTime.new!(end_date, end_time),
+        NaiveDateTime.new!(date, start_time),
+        :minute
+      )
+
+    resolved =
+      DateTime.diff(from_frame(end_date, end_time, tz), from_frame(date, start_time, tz), :minute)
+
+    resolved == nominal
   end
 
   @doc """
