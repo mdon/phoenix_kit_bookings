@@ -62,6 +62,58 @@ defmodule PhoenixKitBookings.EngineTest do
     }
   end
 
+  describe "site frame across daylight saving" do
+    # Europe/Tallinn is UTC+2 in November and UTC+3 in July. Each conversion
+    # must resolve the zone ON THE DATE CONVERTED — the previous code applied
+    # today's offset to every date, so whichever season the suite runs in,
+    # one of these two months came out an hour off.
+    test "to_frame/2 shows the wall clock of the instant's own season" do
+      assert Engine.to_frame(~U[2026-11-05 08:00:00Z], "Europe/Tallinn") ==
+               ~U[2026-11-05 10:00:00Z]
+
+      assert Engine.to_frame(~U[2026-07-05 07:00:00Z], "Europe/Tallinn") ==
+               ~U[2026-07-05 10:00:00Z]
+    end
+
+    test "from_frame/3 stores the instant of the slot's own season" do
+      assert Engine.from_frame(~D[2026-11-05], ~T[10:00:00], "Europe/Tallinn") ==
+               ~U[2026-11-05 08:00:00Z]
+
+      assert Engine.from_frame(~D[2026-07-05], ~T[10:00:00], "Europe/Tallinn") ==
+               ~U[2026-07-05 07:00:00Z]
+    end
+
+    test "a legacy fixed offset never moves" do
+      assert Engine.from_frame(~D[2026-11-05], ~T[10:00:00], "2") == ~U[2026-11-05 08:00:00Z]
+      assert Engine.from_frame(~D[2026-07-05], ~T[10:00:00], "2") == ~U[2026-07-05 08:00:00Z]
+      assert Engine.to_frame(~U[2026-07-05 08:00:00Z], "2") == ~U[2026-07-05 10:00:00Z]
+    end
+
+    test "the frame round-trips in both seasons" do
+      for utc <- [~U[2026-01-15 21:30:00Z], ~U[2026-07-15 21:30:00Z]],
+          tz <- ["Europe/Tallinn", "America/New_York", "5.5", "0"] do
+        assert utc |> Engine.to_frame(tz) |> Engine.from_frame(tz) == utc, "#{tz} #{utc}"
+      end
+    end
+
+    test "a skipped wall clock jumps forward, a repeated one takes the first occurrence" do
+      # Tallinn springs forward 2026-03-29 03:00 → 04:00 and falls back
+      # 2026-10-25 04:00 → 03:00.
+      assert Engine.from_frame(~D[2026-03-29], ~T[03:30:00], "Europe/Tallinn") ==
+               ~U[2026-03-29 01:00:00Z]
+
+      assert Engine.from_frame(~D[2026-10-25], ~T[03:30:00], "Europe/Tallinn") ==
+               ~U[2026-10-25 00:30:00Z]
+    end
+
+    test "an unresolvable zone value degrades to UTC" do
+      assert Engine.from_frame(~D[2026-07-05], ~T[10:00:00], "nonsense") ==
+               ~U[2026-07-05 10:00:00Z]
+
+      assert Engine.to_frame(~U[2026-07-05 10:00:00Z], "nonsense") == ~U[2026-07-05 10:00:00Z]
+    end
+  end
+
   describe "booking_config/1" do
     test "fixed-slot service maps duration and interval, no free-form bounds" do
       config = Engine.booking_config(minutes_service())

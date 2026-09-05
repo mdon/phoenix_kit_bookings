@@ -7,13 +7,15 @@ defmodule PhoenixKitBookings.Engine do
   ## Time frame
 
   All minute-unit math runs in the **site frame** — wall-clock time in the
-  site's configured offset (core's offset-hours model, `"time_zone"`
-  setting). v1 services are physical (hotel / massage parlor / gym), so
+  site's configured zone (core's `"time_zone"` setting: an IANA id, or a
+  legacy fixed offset on a site that never touched the picker). v1
+  services are physical (hotel / massage parlor / gym), so
   slots are shown and validated in venue-local time regardless of the
   viewer (the Cal.com `lockTimeZoneToggleOnBookingPage` behavior). Storage
   is always true UTC: `frame_to_utc/1` on the way in, `utc_to_frame/1` on
-  the way out. Frame datetimes are UTC-tagged shifted values (the same
-  trick as core's `DateUtils.shift_to_offset/2` display path).
+  the way out. Frame datetimes are UTC-tagged wall clocks; each conversion
+  resolves the zone at the instant converted, so a named zone follows
+  daylight saving on the date of the booking, not on the day it was made.
 
   Day/night services never touch clock time — dates are frame-free by the
   workspace's all-day convention.
@@ -220,15 +222,28 @@ defmodule PhoenixKitBookings.Engine do
   end
 
   # ── Site time frame ──────────────────────────────────────────────────
+  #
+  # The frame is the site's wall clock tagged UTC, so the lib's minute
+  # arithmetic never sees a zone. Both conversions resolve the site's zone
+  # AT THE INSTANT BEING CONVERTED through core's helpers (`shift_to_offset/2`
+  # in, `parse_datetime_local/2` out — both older than the 2.0 pin, both
+  # per-instant on any core that knows IANA ids).
+  #
+  # They used to add one scalar, `offset_to_seconds/1` of the setting. Since
+  # core 2.13.9 that setting holds an IANA id on any site that touched the
+  # picker, and the scalar was first 0 (every slot rendered and stored as
+  # UTC — three hours off in Tallinn) and, from 2.14.1, TODAY's offset — so a
+  # booking made in September for a November 10:00 slot was stored an hour
+  # early, and every existing booking from the other daylight-saving season
+  # displayed an hour off.
 
-  @doc "Site offset in seconds (core offset-hours `\"time_zone\"` setting)."
-  def site_offset_seconds do
-    PhoenixKit.Utils.Date.offset_to_seconds(site_offset())
-  rescue
-    _ -> 0
-  end
-
-  defp site_offset do
+  @doc """
+  The site's timezone value — an IANA id such as `Europe/Tallinn`, or a
+  legacy fixed offset such as `"2"` on a site that never touched the
+  picker. `"0"` when settings are unreachable.
+  """
+  @spec site_tz() :: String.t()
+  def site_tz do
     PhoenixKit.Settings.get_setting("time_zone", "0")
   rescue
     _ -> "0"
@@ -237,18 +252,54 @@ defmodule PhoenixKitBookings.Engine do
   end
 
   @doc "Shifts a true-UTC datetime into the site frame (UTC-tagged wall clock)."
-  def utc_to_frame(%DateTime{} = dt), do: DateTime.add(dt, site_offset_seconds(), :second)
+  @spec utc_to_frame(DateTime.t()) :: DateTime.t()
+  def utc_to_frame(%DateTime{} = dt), do: to_frame(dt, site_tz())
 
-  @doc "Shifts a site-frame wall clock back to true UTC."
-  def frame_to_utc(%DateTime{} = dt), do: DateTime.add(dt, -site_offset_seconds(), :second)
+  @doc "Reads a site-frame wall clock back as the true UTC instant."
+  @spec frame_to_utc(DateTime.t()) :: DateTime.t()
+  def frame_to_utc(%DateTime{} = dt), do: from_frame(dt, site_tz())
 
   @doc "Builds a true-UTC datetime from a frame-local date + time."
-  def frame_to_utc(%Date{} = date, %Time{} = time) do
-    date
-    |> DateTime.new!(time, "Etc/UTC")
-    |> frame_to_utc()
+  @spec frame_to_utc(Date.t(), Time.t()) :: DateTime.t()
+  def frame_to_utc(%Date{} = date, %Time{} = time), do: from_frame(date, time, site_tz())
+
+  @doc """
+  `utc_to_frame/1` for an explicit zone value (an IANA id or a legacy
+  offset) — the site setting is read by the one-argument form.
+  """
+  @spec to_frame(DateTime.t(), String.t()) :: DateTime.t()
+  def to_frame(%DateTime{} = dt, tz) do
+    dt
+    |> PhoenixKit.Utils.Date.shift_to_offset(tz)
+    |> DateTime.to_naive()
+    |> DateTime.from_naive!("Etc/UTC")
+  end
+
+  @doc """
+  `frame_to_utc/1,2` for an explicit zone value.
+
+  A wall clock that does not exist (spring-forward gap) resolves to the
+  instant the clocks jump to; one that happens twice (fall-back overlap)
+  resolves to the first occurrence — core's `parse_datetime_local/2` rules.
+  """
+  @spec from_frame(DateTime.t(), String.t()) :: DateTime.t()
+  def from_frame(%DateTime{} = dt, tz) do
+    from_frame(DateTime.to_date(dt), DateTime.to_time(dt), tz)
+  end
+
+  @spec from_frame(Date.t(), Time.t(), String.t()) :: DateTime.t()
+  def from_frame(%Date{} = date, %Time{} = time, tz) do
+    wall = "#{Date.to_iso8601(date)}T#{Calendar.strftime(time, "%H:%M:%S")}"
+
+    case PhoenixKit.Utils.Date.parse_datetime_local(wall, tz) do
+      {:ok, utc} -> utc
+      # An unresolvable zone value degrades to UTC — the same default the
+      # scalar path answered with 0.
+      _ -> DateTime.new!(date, Time.truncate(time, :second), "Etc/UTC")
+    end
   end
 
   @doc "Today's date in the site frame."
+  @spec today() :: Date.t()
   def today, do: DateTime.utc_now() |> utc_to_frame() |> DateTime.to_date()
 end
