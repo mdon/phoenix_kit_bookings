@@ -147,14 +147,43 @@ defmodule PhoenixKitBookings.Engine do
   @doc """
   Bookable slots of a minute service on a frame-local date:
   `[{start_time, end_time, :available | :booked | :unavailable}]`.
+
+  A wall clock the site's zone skips that day — 03:00–03:59 on the
+  spring-forward Sunday in a European zone — is `:unavailable`: the lib
+  builds the grid from minutes and does not know the day is 23 hours long,
+  and such a slot would otherwise resolve to the instant after the jump,
+  landing on top of the next slot (a 03:30–04:30 pick stored as 04:00–04:30).
+  `tz` defaults to the site's setting; tests pass a zone explicitly.
   """
-  def bookable_slots(%Service{time_unit: "minutes"} = service, rules, %Date{} = date, bookings) do
-    TimeSlots.bookable_slots(
-      date,
+  def bookable_slots(service, rules, date, bookings, tz \\ site_tz())
+
+  def bookable_slots(
+        %Service{time_unit: "minutes"} = service,
+        rules,
+        %Date{} = date,
+        bookings,
+        tz
+      ) do
+    date
+    |> TimeSlots.bookable_slots(
       %{booking_config(service) | availability: nil},
       lib_availability(rules),
       bookings_to_events(bookings, service)
     )
+    |> Enum.map(fn {start_time, end_time, status} ->
+      if wall_clock_exists?(date, start_time, tz),
+        do: {start_time, end_time, status},
+        else: {start_time, end_time, :unavailable}
+    end)
+  end
+
+  # A wall clock exists in the zone when reading it and showing it again
+  # gives the same clock; one inside a spring-forward gap comes back an hour
+  # later.
+  defp wall_clock_exists?(date, time, tz) do
+    utc = from_frame(date, time, tz)
+    back = to_frame(utc, tz)
+    DateTime.to_date(back) == date and Time.compare(DateTime.to_time(back), time) == :eq
   end
 
   @doc """
@@ -240,16 +269,11 @@ defmodule PhoenixKitBookings.Engine do
   @doc """
   The site's timezone value — an IANA id such as `Europe/Tallinn`, or a
   legacy fixed offset such as `"2"` on a site that never touched the
-  picker. `"0"` when settings are unreachable.
+  picker. `"0"` when settings are unreachable (`Settings.get_setting/2`
+  already answers the default then).
   """
   @spec site_tz() :: String.t()
-  def site_tz do
-    PhoenixKit.Settings.get_setting("time_zone", "0")
-  rescue
-    _ -> "0"
-  catch
-    :exit, _ -> "0"
-  end
+  def site_tz, do: PhoenixKit.Settings.get_setting("time_zone", "0")
 
   @doc "Shifts a true-UTC datetime into the site frame (UTC-tagged wall clock)."
   @spec utc_to_frame(DateTime.t()) :: DateTime.t()
@@ -287,15 +311,19 @@ defmodule PhoenixKitBookings.Engine do
     from_frame(DateTime.to_date(dt), DateTime.to_time(dt), tz)
   end
 
+  @doc "`from_frame/2` for a frame-local date + time."
   @spec from_frame(Date.t(), Time.t(), String.t()) :: DateTime.t()
   def from_frame(%Date{} = date, %Time{} = time, tz) do
     wall = "#{Date.to_iso8601(date)}T#{Calendar.strftime(time, "%H:%M:%S")}"
+    {micro, precision} = time.microsecond
 
     case PhoenixKit.Utils.Date.parse_datetime_local(wall, tz) do
-      {:ok, utc} -> utc
+      # The wall-clock string carries whole seconds; put the microseconds back
+      # so a frame round-trips exactly.
+      {:ok, utc} -> %{DateTime.add(utc, micro, :microsecond) | microsecond: {micro, precision}}
       # An unresolvable zone value degrades to UTC — the same default the
       # scalar path answered with 0.
-      _ -> DateTime.new!(date, Time.truncate(time, :second), "Etc/UTC")
+      _ -> DateTime.new!(date, time, "Etc/UTC")
     end
   end
 

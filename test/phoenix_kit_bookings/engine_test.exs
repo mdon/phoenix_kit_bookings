@@ -106,6 +106,34 @@ defmodule PhoenixKitBookings.EngineTest do
                ~U[2026-10-25 00:30:00Z]
     end
 
+    test "microseconds survive the round trip" do
+      utc = ~U[2026-07-15 08:00:00.123456Z]
+
+      assert utc |> Engine.to_frame("Europe/Tallinn") |> Engine.from_frame("Europe/Tallinn") ==
+               utc
+
+      assert Engine.from_frame(~D[2026-07-15], ~T[10:00:00.5], "2") == ~U[2026-07-15 08:00:00.5Z]
+    end
+
+    test "slots inside a spring-forward gap are unavailable" do
+      # Tallinn skips 03:00–03:59 on 2026-03-29.
+      service = minutes_service(duration: 30, slot_interval: 30)
+      slots = Engine.bookable_slots(service, [], ~D[2026-03-29], [], "Europe/Tallinn")
+      by_start = Map.new(slots, fn {start_t, _end_t, status} -> {start_t, status} end)
+
+      assert by_start[~T[02:30:00]] == :available
+      assert by_start[~T[03:00:00]] == :unavailable
+      assert by_start[~T[03:30:00]] == :unavailable
+      assert by_start[~T[04:00:00]] == :available
+
+      # The same grid on an ordinary day, or in a zone that never moves, is untouched.
+      assert Engine.bookable_slots(service, [], ~D[2026-03-28], [], "Europe/Tallinn")
+             |> Enum.all?(fn {_s, _e, status} -> status == :available end)
+
+      assert Engine.bookable_slots(service, [], ~D[2026-03-29], [], "2")
+             |> Enum.all?(fn {_s, _e, status} -> status == :available end)
+    end
+
     test "an unresolvable zone value degrades to UTC" do
       assert Engine.from_frame(~D[2026-07-05], ~T[10:00:00], "nonsense") ==
                ~U[2026-07-05 10:00:00Z]
