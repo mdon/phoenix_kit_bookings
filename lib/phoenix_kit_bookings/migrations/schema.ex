@@ -12,6 +12,22 @@ defmodule PhoenixKitBookings.Migrations.Schema do
   `migrated_version_runtime/1`. Reference implementation —
   `PhoenixKitStats.Migrations.Schema` in `phoenix_kit_stats`.
 
+  ## Versions
+
+    * **V1** — the tables above (every statement `IF NOT EXISTS`).
+    * **V2** — `phoenix_kit_bookings_bookings.time_zone`: the site's zone
+      value at the moment a booking was made (an IANA id or a legacy
+      offset, as core keeps it). A booking's instants are UTC; the wall
+      clock the customer picked lived only in the site's zone at that
+      moment, and when that setting moved to IANA ids and the frame turned
+      out to have read it as one number, the rows could not be repaired —
+      nothing said which zone each was made in. Nullable: rows written
+      before V2 hold no answer.
+
+  The applied version is a `bookings_schema:<N>` comment on the services
+  table (the CRM/projects chains' convention). A marker-less install whose
+  tables exist is V1 — it predates the marker.
+
   A booking carries either a timed pair (`starts_at`/`ends_at`, minute-unit
   services) or a date pair (`starts_on`/`ends_on`, day/night services) —
   exactly one, enforced by the `bookings_time_shape` CHECK. Both pairs are
@@ -20,7 +36,9 @@ defmodule PhoenixKitBookings.Migrations.Schema do
 
   use Ecto.Migration
 
-  @current_version 1
+  @current_version 2
+  @marker_prefix "bookings_schema:"
+  @version_table "phoenix_kit_bookings_services"
 
   @doc "Target schema version of the Bookings module."
   def current_version, do: @current_version
@@ -28,25 +46,37 @@ defmodule PhoenixKitBookings.Migrations.Schema do
   @doc """
   Currently applied schema version, read from the database.
 
-  Returns `0` when the `phoenix_kit_bookings_services` table does not yet
-  exist, and `#{@current_version}` once it has been created. `opts` is a
-  keyword list with an optional `:prefix`.
+  The `bookings_schema:<N>` marker on the services table when present; a
+  marker-less services table reads as `1` (a V1 install predating markers)
+  and a missing table as `0`. `opts` is a keyword list with an optional
+  `:prefix`.
   """
   def migrated_version_runtime(opts \\ []) do
     prefix = normalize_prefix(opts)
 
-    table =
-      if prefix == "public",
-        do: "public.phoenix_kit_bookings_services",
-        else: "#{prefix}.phoenix_kit_bookings_services"
+    query = """
+    SELECT d.description
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    LEFT JOIN pg_description d
+      ON d.objoid = c.oid AND d.objsubid = 0 AND d.classoid = 'pg_class'::regclass
+    WHERE n.nspname = $1 AND c.relname = '#{@version_table}' AND c.relkind = 'r'
+    """
 
-    case PhoenixKit.RepoHelper.repo().query("SELECT to_regclass($1)", [table]) do
-      {:ok, %{rows: [[nil]]}} -> 0
-      {:ok, %{rows: [[_oid]]}} -> @current_version
+    case PhoenixKit.RepoHelper.repo().query(query, [prefix]) do
+      {:ok, %{rows: [[@marker_prefix <> n]]}} -> parse_version(n)
+      {:ok, %{rows: [[_other_or_nil]]}} -> 1
       _ -> 0
     end
   rescue
     _ -> 0
+  end
+
+  defp parse_version(n) do
+    case Integer.parse(n) do
+      {v, ""} when v >= 0 -> v
+      _ -> 1
+    end
   end
 
   @doc """
@@ -255,6 +285,17 @@ defmodule PhoenixKitBookings.Migrations.Schema do
     CREATE INDEX IF NOT EXISTS phoenix_kit_bookings_bookings_customer_email_index
     ON #{prefix_str}phoenix_kit_bookings_bookings (customer_email)
     """)
+
+    # ── V2 ──────────────────────────────────────────────────────────────
+    execute("""
+    ALTER TABLE #{prefix_str}phoenix_kit_bookings_bookings
+      ADD COLUMN IF NOT EXISTS time_zone VARCHAR(64)
+    """)
+
+    # The marker is stamped last, after every statement it certifies.
+    execute(
+      "COMMENT ON TABLE #{prefix_str}#{@version_table} IS '#{@marker_prefix}#{@current_version}'"
+    )
   end
 
   @doc """
@@ -265,6 +306,25 @@ defmodule PhoenixKitBookings.Migrations.Schema do
   """
   def down(opts \\ []) do
     prefix_str = prefix_str(normalize_prefix(opts))
+    target = if is_list(opts), do: Keyword.get(opts, :version, 0), else: 0
+
+    if target >= 1 do
+      down_to_v1(prefix_str)
+    else
+      drop_everything(prefix_str)
+    end
+  end
+
+  # Back to V1: the V2 column goes, the tables stay, the marker says 1.
+  defp down_to_v1(prefix_str) do
+    execute(
+      "ALTER TABLE #{prefix_str}phoenix_kit_bookings_bookings DROP COLUMN IF EXISTS time_zone"
+    )
+
+    execute("COMMENT ON TABLE #{prefix_str}#{@version_table} IS '#{@marker_prefix}1'")
+  end
+
+  defp drop_everything(prefix_str) do
     execute("DROP TABLE IF EXISTS #{prefix_str}phoenix_kit_bookings_bookings CASCADE")
     execute("DROP TABLE IF EXISTS #{prefix_str}phoenix_kit_bookings_waitlist CASCADE")
     execute("DROP TABLE IF EXISTS #{prefix_str}phoenix_kit_bookings_holds CASCADE")

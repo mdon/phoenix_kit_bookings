@@ -49,11 +49,14 @@ Migrations.Schema          module-owned versioned migration (stats/legal protoco
 - **Race-proofing**: `create_booking` re-validates inside a transaction
   holding `FOR UPDATE` on the service row. The pure `Engine.validate_request`
   call in the public flow is advisory UX only.
-- **Time frame**: minute-unit math runs in the SITE offset frame (core's
-  offset-hours `"time_zone"` setting; v1 services are physical venues —
-  the Cal.com `lockTimeZoneToggleOnBookingPage` behavior). Storage is
-  true UTC via `Engine.frame_to_utc/utc_to_frame`. Day/night uses bare
-  dates, no tz math ever.
+- **Time frame**: minute-unit math runs in the SITE frame — the wall clock
+  of core's `"time_zone"` setting, an IANA id or a legacy fixed offset (v1
+  services are physical venues — the Cal.com `lockTimeZoneToggleOnBookingPage`
+  behavior). Storage is true UTC via `Engine.frame_to_utc/utc_to_frame`,
+  which resolve the zone AT THE INSTANT CONVERTED through core's per-instant
+  helpers; never turn the setting into one number and add it — that was an
+  hour off across every daylight-saving switch (and plain UTC on IANA sites
+  before core 2.14.1). Day/night uses bare dates, no tz math ever.
 - **Permission orientation** (core's sub-implies-base forces it): base
   `bookings` = admin area scoped to OWNED services (`owner_uuid`;
   nil = site service); sub `bookings.manage_all` = everything + settings.

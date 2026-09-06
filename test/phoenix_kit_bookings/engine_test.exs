@@ -62,6 +62,111 @@ defmodule PhoenixKitBookings.EngineTest do
     }
   end
 
+  describe "site frame across daylight saving" do
+    # Europe/Tallinn is UTC+2 in November and UTC+3 in July. Each conversion
+    # must resolve the zone ON THE DATE CONVERTED — the previous code applied
+    # today's offset to every date, so whichever season the suite runs in,
+    # one of these two months came out an hour off.
+    test "to_frame/2 shows the wall clock of the instant's own season" do
+      assert Engine.to_frame(~U[2026-11-05 08:00:00Z], "Europe/Tallinn") ==
+               ~U[2026-11-05 10:00:00Z]
+
+      assert Engine.to_frame(~U[2026-07-05 07:00:00Z], "Europe/Tallinn") ==
+               ~U[2026-07-05 10:00:00Z]
+    end
+
+    test "from_frame/3 stores the instant of the slot's own season" do
+      assert Engine.from_frame(~D[2026-11-05], ~T[10:00:00], "Europe/Tallinn") ==
+               ~U[2026-11-05 08:00:00Z]
+
+      assert Engine.from_frame(~D[2026-07-05], ~T[10:00:00], "Europe/Tallinn") ==
+               ~U[2026-07-05 07:00:00Z]
+    end
+
+    test "a legacy fixed offset never moves" do
+      assert Engine.from_frame(~D[2026-11-05], ~T[10:00:00], "2") == ~U[2026-11-05 08:00:00Z]
+      assert Engine.from_frame(~D[2026-07-05], ~T[10:00:00], "2") == ~U[2026-07-05 08:00:00Z]
+      assert Engine.to_frame(~U[2026-07-05 08:00:00Z], "2") == ~U[2026-07-05 10:00:00Z]
+    end
+
+    test "the frame round-trips in both seasons" do
+      for utc <- [~U[2026-01-15 21:30:00Z], ~U[2026-07-15 21:30:00Z]],
+          tz <- ["Europe/Tallinn", "America/New_York", "5.5", "0"] do
+        assert utc |> Engine.to_frame(tz) |> Engine.from_frame(tz) == utc, "#{tz} #{utc}"
+      end
+    end
+
+    test "a skipped wall clock jumps forward, a repeated one takes the first occurrence" do
+      # Tallinn springs forward 2026-03-29 03:00 → 04:00 and falls back
+      # 2026-10-25 04:00 → 03:00.
+      assert Engine.from_frame(~D[2026-03-29], ~T[03:30:00], "Europe/Tallinn") ==
+               ~U[2026-03-29 01:00:00Z]
+
+      assert Engine.from_frame(~D[2026-10-25], ~T[03:30:00], "Europe/Tallinn") ==
+               ~U[2026-10-25 00:30:00Z]
+    end
+
+    test "microseconds survive the round trip" do
+      utc = ~U[2026-07-15 08:00:00.123456Z]
+
+      assert utc |> Engine.to_frame("Europe/Tallinn") |> Engine.from_frame("Europe/Tallinn") ==
+               utc
+
+      assert Engine.from_frame(~D[2026-07-15], ~T[10:00:00.5], "2") == ~U[2026-07-15 08:00:00.5Z]
+    end
+
+    test "slots inside a spring-forward gap are unavailable" do
+      # Tallinn skips 03:00–03:59 on 2026-03-29.
+      service = minutes_service(duration: 30, slot_interval: 30)
+      slots = Engine.bookable_slots(service, [], ~D[2026-03-29], [], "Europe/Tallinn")
+      by_start = Map.new(slots, fn {start_t, _end_t, status} -> {start_t, status} end)
+
+      assert by_start[~T[02:00:00]] == :available
+      # 02:30–03:00 ends exactly at the jump: still thirty minutes, fine
+      assert by_start[~T[02:30:00]] == :available
+      assert by_start[~T[03:00:00]] == :unavailable
+      assert by_start[~T[03:30:00]] == :unavailable
+      assert by_start[~T[04:00:00]] == :available
+
+      hour_slots =
+        Engine.bookable_slots(
+          minutes_service(duration: 60, slot_interval: 30),
+          [],
+          ~D[2026-03-29],
+          [],
+          "Europe/Tallinn"
+        )
+
+      hour_by_start = Map.new(hour_slots, fn {start_t, _end_t, status} -> {start_t, status} end)
+      assert hour_by_start[~T[02:00:00]] == :available
+      assert hour_by_start[~T[02:30:00]] == :unavailable
+      assert hour_by_start[~T[04:00:00]] == :available
+
+      # fall-back day (2026-10-25, 04:00 → 03:00): a slot starting in the
+      # repeated hour and ending after it would store ninety minutes
+      fall = Engine.bookable_slots(service, [], ~D[2026-10-25], [], "Europe/Tallinn")
+      fall_by_start = Map.new(fall, fn {start_t, _end_t, status} -> {start_t, status} end)
+      assert fall_by_start[~T[02:30:00]] == :available
+      assert fall_by_start[~T[03:00:00]] == :available
+      assert fall_by_start[~T[03:30:00]] == :unavailable
+      assert fall_by_start[~T[04:00:00]] == :available
+
+      # The same grid on an ordinary day, or in a zone that never moves, is untouched.
+      assert Engine.bookable_slots(service, [], ~D[2026-03-28], [], "Europe/Tallinn")
+             |> Enum.all?(fn {_s, _e, status} -> status == :available end)
+
+      assert Engine.bookable_slots(service, [], ~D[2026-03-29], [], "2")
+             |> Enum.all?(fn {_s, _e, status} -> status == :available end)
+    end
+
+    test "an unresolvable zone value degrades to UTC" do
+      assert Engine.from_frame(~D[2026-07-05], ~T[10:00:00], "nonsense") ==
+               ~U[2026-07-05 10:00:00Z]
+
+      assert Engine.to_frame(~U[2026-07-05 10:00:00Z], "nonsense") == ~U[2026-07-05 10:00:00Z]
+    end
+  end
+
   describe "booking_config/1" do
     test "fixed-slot service maps duration and interval, no free-form bounds" do
       config = Engine.booking_config(minutes_service())

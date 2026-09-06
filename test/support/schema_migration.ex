@@ -17,3 +17,18 @@ defmodule PhoenixKitBookings.Test.SchemaMigration do
   def up, do: Schema.up(prefix: "public")
   def down, do: Schema.down(prefix: "public")
 end
+
+defmodule PhoenixKitBookings.Test.SchemaMigrationV2 do
+  @moduledoc """
+  The V2 wrapper — what `mix phoenix_kit.update` would generate for a host
+  whose database already carries V1: `Schema.up/1` is idempotent, so
+  replaying it adds only what V2 adds and restamps the marker; `down/0` goes
+  back to V1 without dropping the tables.
+  """
+  use Ecto.Migration
+
+  alias PhoenixKitBookings.Migrations.Schema
+
+  def up, do: Schema.up(prefix: "public")
+  def down, do: Schema.down(prefix: "public", version: 1)
+end

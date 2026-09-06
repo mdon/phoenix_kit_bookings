@@ -7,13 +7,15 @@ defmodule PhoenixKitBookings.Engine do
   ## Time frame
 
   All minute-unit math runs in the **site frame** — wall-clock time in the
-  site's configured offset (core's offset-hours model, `"time_zone"`
-  setting). v1 services are physical (hotel / massage parlor / gym), so
+  site's configured zone (core's `"time_zone"` setting: an IANA id, or a
+  legacy fixed offset on a site that never touched the picker). v1
+  services are physical (hotel / massage parlor / gym), so
   slots are shown and validated in venue-local time regardless of the
   viewer (the Cal.com `lockTimeZoneToggleOnBookingPage` behavior). Storage
   is always true UTC: `frame_to_utc/1` on the way in, `utc_to_frame/1` on
-  the way out. Frame datetimes are UTC-tagged shifted values (the same
-  trick as core's `DateUtils.shift_to_offset/2` display path).
+  the way out. Frame datetimes are UTC-tagged wall clocks; each conversion
+  resolves the zone at the instant converted, so a named zone follows
+  daylight saving on the date of the booking, not on the day it was made.
 
   Day/night services never touch clock time — dates are frame-free by the
   workspace's all-day convention.
@@ -145,14 +147,59 @@ defmodule PhoenixKitBookings.Engine do
   @doc """
   Bookable slots of a minute service on a frame-local date:
   `[{start_time, end_time, :available | :booked | :unavailable}]`.
+
+  A slot whose stored instants would not be as long as the slot says is
+  `:unavailable`: the lib builds the grid from minutes and does not know
+  the spring-forward Sunday is 23 hours long (03:00–03:59 never happens in
+  a European zone, so a 03:30–04:30 pick would be stored as 04:00–04:30 and
+  a 02:30–03:30 one as thirty minutes) or that the fall-back Sunday repeats
+  an hour.
+  `tz` defaults to the site's setting; tests pass a zone explicitly.
   """
-  def bookable_slots(%Service{time_unit: "minutes"} = service, rules, %Date{} = date, bookings) do
-    TimeSlots.bookable_slots(
-      date,
+  def bookable_slots(service, rules, date, bookings, tz \\ site_tz())
+
+  def bookable_slots(
+        %Service{time_unit: "minutes"} = service,
+        rules,
+        %Date{} = date,
+        bookings,
+        tz
+      ) do
+    date
+    |> TimeSlots.bookable_slots(
       %{booking_config(service) | availability: nil},
       lib_availability(rules),
       bookings_to_events(bookings, service)
     )
+    |> Enum.map(fn {start_time, end_time, status} ->
+      if slot_intact?(date, start_time, end_time, tz),
+        do: {start_time, end_time, status},
+        else: {start_time, end_time, :unavailable}
+    end)
+  end
+
+  # A slot is intact when the instants its wall clocks resolve to are as far
+  # apart as the wall clocks say. On the spring-forward day a clock inside the
+  # gap resolves to the instant after the jump, so 03:00–03:30 collapses to
+  # nothing and 02:30–03:30 to thirty minutes — while 02:30–03:00 is fine,
+  # its end IS the jump. On the fall-back day a start in the repeated hour
+  # resolves to its first occurrence, so 03:30–04:00 would store ninety
+  # minutes. Either way the booking would not be the slot the customer saw.
+  defp slot_intact?(date, start_time, end_time, tz) do
+    # The end is on the next date when the slot crosses midnight.
+    end_date = if Time.compare(end_time, start_time) == :gt, do: date, else: Date.add(date, 1)
+
+    nominal =
+      NaiveDateTime.diff(
+        NaiveDateTime.new!(end_date, end_time),
+        NaiveDateTime.new!(date, start_time),
+        :minute
+      )
+
+    resolved =
+      DateTime.diff(from_frame(end_date, end_time, tz), from_frame(date, start_time, tz), :minute)
+
+    resolved == nominal
   end
 
   @doc """
@@ -220,35 +267,83 @@ defmodule PhoenixKitBookings.Engine do
   end
 
   # ── Site time frame ──────────────────────────────────────────────────
+  #
+  # The frame is the site's wall clock tagged UTC, so the lib's minute
+  # arithmetic never sees a zone. Both conversions resolve the site's zone
+  # AT THE INSTANT BEING CONVERTED through core's helpers (`shift_to_offset/2`
+  # in, `parse_datetime_local/2` out — both older than the 2.0 pin, both
+  # per-instant on any core that knows IANA ids).
+  #
+  # They used to add one scalar, `offset_to_seconds/1` of the setting. Since
+  # core 2.13.9 that setting holds an IANA id on any site that touched the
+  # picker, and the scalar was first 0 (every slot rendered and stored as
+  # UTC — three hours off in Tallinn) and, from 2.14.1, TODAY's offset — so a
+  # booking made in September for a November 10:00 slot was stored an hour
+  # early, and every existing booking from the other daylight-saving season
+  # displayed an hour off.
 
-  @doc "Site offset in seconds (core offset-hours `\"time_zone\"` setting)."
-  def site_offset_seconds do
-    PhoenixKit.Utils.Date.offset_to_seconds(site_offset())
-  rescue
-    _ -> 0
-  end
-
-  defp site_offset do
-    PhoenixKit.Settings.get_setting("time_zone", "0")
-  rescue
-    _ -> "0"
-  catch
-    :exit, _ -> "0"
-  end
+  @doc """
+  The site's timezone value — an IANA id such as `Europe/Tallinn`, or a
+  legacy fixed offset such as `"2"` on a site that never touched the
+  picker. `"0"` when settings are unreachable (`Settings.get_setting/2`
+  already answers the default then).
+  """
+  @spec site_tz() :: String.t()
+  def site_tz, do: PhoenixKit.Settings.get_setting("time_zone", "0")
 
   @doc "Shifts a true-UTC datetime into the site frame (UTC-tagged wall clock)."
-  def utc_to_frame(%DateTime{} = dt), do: DateTime.add(dt, site_offset_seconds(), :second)
+  @spec utc_to_frame(DateTime.t()) :: DateTime.t()
+  def utc_to_frame(%DateTime{} = dt), do: to_frame(dt, site_tz())
 
-  @doc "Shifts a site-frame wall clock back to true UTC."
-  def frame_to_utc(%DateTime{} = dt), do: DateTime.add(dt, -site_offset_seconds(), :second)
+  @doc "Reads a site-frame wall clock back as the true UTC instant."
+  @spec frame_to_utc(DateTime.t()) :: DateTime.t()
+  def frame_to_utc(%DateTime{} = dt), do: from_frame(dt, site_tz())
 
   @doc "Builds a true-UTC datetime from a frame-local date + time."
-  def frame_to_utc(%Date{} = date, %Time{} = time) do
-    date
-    |> DateTime.new!(time, "Etc/UTC")
-    |> frame_to_utc()
+  @spec frame_to_utc(Date.t(), Time.t()) :: DateTime.t()
+  def frame_to_utc(%Date{} = date, %Time{} = time), do: from_frame(date, time, site_tz())
+
+  @doc """
+  `utc_to_frame/1` for an explicit zone value (an IANA id or a legacy
+  offset) — the site setting is read by the one-argument form.
+  """
+  @spec to_frame(DateTime.t(), String.t()) :: DateTime.t()
+  def to_frame(%DateTime{} = dt, tz) do
+    dt
+    |> PhoenixKit.Utils.Date.shift_to_offset(tz)
+    |> DateTime.to_naive()
+    |> DateTime.from_naive!("Etc/UTC")
+  end
+
+  @doc """
+  `frame_to_utc/1,2` for an explicit zone value.
+
+  A wall clock that does not exist (spring-forward gap) resolves to the
+  instant the clocks jump to; one that happens twice (fall-back overlap)
+  resolves to the first occurrence — core's `parse_datetime_local/2` rules.
+  """
+  @spec from_frame(DateTime.t(), String.t()) :: DateTime.t()
+  def from_frame(%DateTime{} = dt, tz) do
+    from_frame(DateTime.to_date(dt), DateTime.to_time(dt), tz)
+  end
+
+  @doc "`from_frame/2` for a frame-local date + time."
+  @spec from_frame(Date.t(), Time.t(), String.t()) :: DateTime.t()
+  def from_frame(%Date{} = date, %Time{} = time, tz) do
+    wall = "#{Date.to_iso8601(date)}T#{Calendar.strftime(time, "%H:%M:%S")}"
+    {micro, precision} = time.microsecond
+
+    case PhoenixKit.Utils.Date.parse_datetime_local(wall, tz) do
+      # The wall-clock string carries whole seconds; put the microseconds back
+      # so a frame round-trips exactly.
+      {:ok, utc} -> %{DateTime.add(utc, micro, :microsecond) | microsecond: {micro, precision}}
+      # An unresolvable zone value degrades to UTC — the same default the
+      # scalar path answered with 0.
+      _ -> DateTime.new!(date, time, "Etc/UTC")
+    end
   end
 
   @doc "Today's date in the site frame."
+  @spec today() :: Date.t()
   def today, do: DateTime.utc_now() |> utc_to_frame() |> DateTime.to_date()
 end

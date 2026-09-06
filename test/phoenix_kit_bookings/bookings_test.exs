@@ -29,6 +29,8 @@ defmodule PhoenixKitBookings.BookingsTest do
       assert booking.status == "confirmed"
       assert booking.starts_at
       refute booking.starts_on
+      # a timed booking remembers the site's zone it was made in
+      assert booking.time_zone == PhoenixKitBookings.Engine.site_tz()
 
       assert {:error, :overlap, _} =
                Bookings.create_booking(
@@ -181,6 +183,8 @@ defmodule PhoenixKitBookings.BookingsTest do
       bookings =
         for _ <- 1..3 do
           {:ok, booking} = Bookings.create_booking(service, range, customer_attrs())
+          # dates carry no zone
+          assert booking.time_zone == nil
           booking
         end
 
