@@ -159,6 +159,62 @@ defmodule PhoenixKitBookings.EngineTest do
              |> Enum.all?(fn {_s, _e, status} -> status == :available end)
     end
 
+    test "frame_span_intact?/5 refuses a span the zone would not store as picked" do
+      # The fixed-slot grid marks these unavailable, but a free-form service
+      # has no grid and both pickers take their times from the client — so the
+      # predicate is what the public flow calls before building a range.
+      refute Engine.frame_span_intact?(
+               ~D[2026-03-29],
+               ~T[02:30:00],
+               ~D[2026-03-29],
+               ~T[03:30:00],
+               "Europe/Tallinn"
+             )
+
+      refute Engine.frame_span_intact?(
+               ~D[2026-10-25],
+               ~T[03:30:00],
+               ~D[2026-10-25],
+               ~T[04:00:00],
+               "Europe/Tallinn"
+             )
+
+      # Ends exactly at the jump, an ordinary day, and a zone that never
+      # moves are all intact.
+      assert Engine.frame_span_intact?(
+               ~D[2026-03-29],
+               ~T[02:30:00],
+               ~D[2026-03-29],
+               ~T[03:00:00],
+               "Europe/Tallinn"
+             )
+
+      assert Engine.frame_span_intact?(
+               ~D[2026-03-28],
+               ~T[02:30:00],
+               ~D[2026-03-28],
+               ~T[03:30:00],
+               "Europe/Tallinn"
+             )
+
+      assert Engine.frame_span_intact?(
+               ~D[2026-03-29],
+               ~T[02:30:00],
+               ~D[2026-03-29],
+               ~T[03:30:00],
+               "2"
+             )
+
+      # A span crossing midnight is measured against its own end date.
+      assert Engine.frame_span_intact?(
+               ~D[2026-03-28],
+               ~T[23:00:00],
+               ~D[2026-03-29],
+               ~T[01:00:00],
+               "Europe/Tallinn"
+             )
+    end
+
     test "an unresolvable zone value degrades to UTC" do
       assert Engine.from_frame(~D[2026-07-05], ~T[10:00:00], "nonsense") ==
                ~U[2026-07-05 10:00:00Z]

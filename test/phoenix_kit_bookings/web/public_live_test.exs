@@ -169,6 +169,46 @@ defmodule PhoenixKitBookings.Web.PublicLiveTest do
       assert [booking] = Bookings.list_bookings(service_uuid: service.uuid)
       assert DateTime.diff(booking.ends_at, booking.starts_at, :hour) == 8
     end
+
+    test "refuses a span the site's zone would not store as picked", %{conn: conn} do
+      # A free-form service has no slot grid, so the grid's daylight-saving
+      # guard never sees this pick: 02:30–03:30 on a spring-forward Sunday
+      # would be stored as thirty minutes (03:00–03:59 never happens), or
+      # ninety on the fall-back one.
+      {:ok, _} = PhoenixKit.Settings.update_setting("time_zone", "Europe/Tallinn")
+      service = freeform_service_fixture()
+      gap_date = next_spring_forward()
+
+      {:ok, view, _html} = live(conn, "/book/#{service.slug}")
+
+      html =
+        view
+        |> form("form[phx-submit=pick_free]", %{
+          "picker" => %{
+            "date" => Date.to_iso8601(gap_date),
+            "start_time" => "02:30",
+            "end_time" => "03:30"
+          }
+        })
+        |> render_submit()
+
+      refute html =~ "Your name"
+      assert Bookings.list_bookings(service_uuid: service.uuid) == []
+
+      # The same service takes an ordinary span on the very same day.
+      html =
+        view
+        |> form("form[phx-submit=pick_free]", %{
+          "picker" => %{
+            "date" => Date.to_iso8601(gap_date),
+            "start_time" => "10:00",
+            "end_time" => "11:00"
+          }
+        })
+        |> render_submit()
+
+      assert html =~ "Your name"
+    end
   end
 
   describe "manage page" do
@@ -242,5 +282,24 @@ defmodule PhoenixKitBookings.Web.PublicLiveTest do
 
       assert html =~ "not currently taking bookings"
     end
+  end
+
+  # The next date whose 02:30–03:30 the site's zone cannot store as an hour —
+  # computed rather than hard-coded so the test keeps meaning after the date
+  # passes.
+  defp next_spring_forward do
+    today = Date.utc_today()
+    offset = Enum.find(1..400, &(not intact?(Date.add(today, &1))))
+    Date.add(today, offset)
+  end
+
+  defp intact?(date) do
+    PhoenixKitBookings.Engine.frame_span_intact?(
+      date,
+      ~T[02:30:00],
+      date,
+      ~T[03:30:00],
+      "Europe/Tallinn"
+    )
   end
 end

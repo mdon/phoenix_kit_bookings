@@ -56,7 +56,17 @@ Migrations.Schema          module-owned versioned migration (stats/legal protoco
   which resolve the zone AT THE INSTANT CONVERTED through core's per-instant
   helpers; never turn the setting into one number and add it — that was an
   hour off across every daylight-saving switch (and plain UTC on IANA sites
-  before core 2.14.1). Day/night uses bare dates, no tz math ever.
+  before core 2.14.1). **That is why the core pin is `~> 2.14`** — those
+  helpers only became per-instant in 2.14.1, and below it the frame collapses
+  to UTC without raising anything. Day/night uses bare dates, no tz math ever.
+- **Two Sundays a year a day is not 24 hours long**, and the lib's grid is
+  built from minutes. `Engine.frame_span_intact?/5` is the guard: a span whose
+  wall clocks resolve to instants a different distance apart is refused.
+  Every path that turns a wall clock into a range must call it — the slot grid
+  marks such slots `:unavailable`, and BOTH public pickers check it before
+  building a range, because a free-form service renders no grid and
+  `pick_slot`'s params come from the client. Without it a 02:30–03:30 pick was
+  asked as 60 minutes, stored as 30 and validated as 90.
 - **Permission orientation** (core's sub-implies-base forces it): base
   `bookings` = admin area scoped to OWNED services (`owner_uuid`;
   nil = site service); sub `bookings.manage_all` = everything + settings.
@@ -83,7 +93,7 @@ v0.1.0 is unreleased, edit V1 in place (workspace convention).
 
 ## Testing
 
-- `mix test.setup && mix test` — 74 tests. Engine/DayEngine tests are pure
+- `mix test.setup && mix test` — 118 tests. Engine/DayEngine tests are pure
   (no DB); contexts + LVs are `:integration` (auto-excluded without DB).
 - `test_helper.exs` enables the module setting BEFORE sandbox mode —
   `Scope.can?/2` gates on module enablement, so Policy checks would

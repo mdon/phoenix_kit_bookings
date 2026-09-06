@@ -149,11 +149,12 @@ defmodule PhoenixKitBookings.Web.Public.BookingFlow do
   end
 
   def handle_event("pick_slot", %{"start" => start_str, "end" => end_str}, socket) do
-    with {:ok, start_t} <- parse_time(start_str),
-         {:ok, end_t} <- parse_time(end_str) do
-      date = socket.assigns.pick_date
-      end_date = if Time.compare(end_t, start_t) == :gt, do: date, else: Date.add(date, 1)
+    date = socket.assigns.pick_date
 
+    with {:ok, start_t} <- parse_time(start_str),
+         {:ok, end_t} <- parse_time(end_str),
+         end_date = end_date_of(date, start_t, end_t),
+         true <- Engine.frame_span_intact?(date, start_t, end_date, end_t) do
       range =
         {Engine.frame_to_utc(date, start_t), Engine.frame_to_utc(end_date, end_t)}
 
@@ -166,8 +167,9 @@ defmodule PhoenixKitBookings.Web.Public.BookingFlow do
   def handle_event("pick_free", %{"picker" => params}, socket) do
     with {:ok, date} <- Date.from_iso8601(params["date"] || ""),
          {:ok, start_t} <- parse_time(params["start_time"]),
-         {:ok, end_t} <- parse_time(params["end_time"]) do
-      end_date = if Time.compare(end_t, start_t) == :gt, do: date, else: Date.add(date, 1)
+         {:ok, end_t} <- parse_time(params["end_time"]),
+         end_date = end_date_of(date, start_t, end_t),
+         true <- Engine.frame_span_intact?(date, start_t, end_date, end_t) do
       range = {Engine.frame_to_utc(date, start_t), Engine.frame_to_utc(end_date, end_t)}
 
       advisory_advance(assign(socket, pick_date: date), range)
@@ -246,6 +248,16 @@ defmodule PhoenixKitBookings.Web.Public.BookingFlow do
          )
          |> refresh_pick()}
     end
+  end
+
+  # A picked span ends on the next date when it crosses midnight. The zone
+  # has to resolve BOTH ends as far apart as the clocks say — a span across a
+  # daylight-saving jump would be stored as a different booking than the one
+  # picked, and only the fixed-slot grid marks those (`Engine.bookable_slots`);
+  # a free-form service has no grid, and either picker's params arrive from
+  # the client.
+  defp end_date_of(date, start_t, end_t) do
+    if Time.compare(end_t, start_t) == :gt, do: date, else: Date.add(date, 1)
   end
 
   defp advisory_advance(socket, range) do

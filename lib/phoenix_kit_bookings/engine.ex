@@ -115,13 +115,14 @@ defmodule PhoenixKitBookings.Engine do
       ) do
     now = Keyword.get(opts, :now, DateTime.utc_now())
     extra_events = Keyword.get(opts, :extra_events, [])
+    tz = site_tz()
 
     Constraints.validate_booking(
-      utc_to_frame(starts_at),
-      utc_to_frame(ends_at),
+      to_frame(starts_at, tz),
+      to_frame(ends_at, tz),
       booking_config(service),
-      bookings_to_events(active_bookings, service) ++ extra_events,
-      now: utc_to_frame(now),
+      bookings_to_events(active_bookings, service, tz) ++ extra_events,
+      now: to_frame(now, tz),
       availabilities: lib_availability(rules)
     )
   end
@@ -169,7 +170,7 @@ defmodule PhoenixKitBookings.Engine do
     |> TimeSlots.bookable_slots(
       %{booking_config(service) | availability: nil},
       lib_availability(rules),
-      bookings_to_events(bookings, service)
+      bookings_to_events(bookings, service, tz)
     )
     |> Enum.map(fn {start_time, end_time, status} ->
       if slot_intact?(date, start_time, end_time, tz),
@@ -178,17 +179,30 @@ defmodule PhoenixKitBookings.Engine do
     end)
   end
 
-  # A slot is intact when the instants its wall clocks resolve to are as far
-  # apart as the wall clocks say. On the spring-forward day a clock inside the
-  # gap resolves to the instant after the jump, so 03:00–03:30 collapses to
-  # nothing and 02:30–03:30 to thirty minutes — while 02:30–03:00 is fine,
-  # its end IS the jump. On the fall-back day a start in the repeated hour
-  # resolves to its first occurrence, so 03:30–04:00 would store ninety
-  # minutes. Either way the booking would not be the slot the customer saw.
   defp slot_intact?(date, start_time, end_time, tz) do
     # The end is on the next date when the slot crosses midnight.
     end_date = if Time.compare(end_time, start_time) == :gt, do: date, else: Date.add(date, 1)
+    frame_span_intact?(date, start_time, end_date, end_time, tz)
+  end
 
+  @doc """
+  True when the instants a frame-local span's wall clocks resolve to are as
+  far apart as the wall clocks themselves say.
+
+  False only on a daylight-saving day in a named zone. On the spring-forward
+  day a clock inside the gap resolves to the instant after the jump, so
+  03:00–03:30 collapses to nothing and 02:30–03:30 to thirty minutes — while
+  02:30–03:00 is fine, its end IS the jump. On the fall-back day a start in
+  the repeated hour resolves to its first occurrence, so 03:30–04:00 would
+  store ninety minutes. Either way the stored booking is not the one the
+  customer picked, so every picker refuses the span: `bookable_slots/5`
+  marks such a slot `:unavailable`, and the public flow rejects a
+  hand-picked one (free-form services have no slot grid to mark).
+
+  `tz` defaults to the site's setting; tests pass a zone explicitly.
+  """
+  @spec frame_span_intact?(Date.t(), Time.t(), Date.t(), Time.t(), String.t()) :: boolean()
+  def frame_span_intact?(date, start_time, end_date, end_time, tz \\ site_tz()) do
     nominal =
       NaiveDateTime.diff(
         NaiveDateTime.new!(end_date, end_time),
@@ -226,8 +240,14 @@ defmodule PhoenixKitBookings.Engine do
   bookings need a gap of `buffer_after + buffer_before` — the existing
   booking's cleanup plus the new booking's prep — which is the intended
   semantics for a shared per-service buffer config.
+
+  `tz` defaults to the site's setting; callers that already resolved it
+  pass it in, so a list of bookings costs one settings read and not two
+  per booking.
   """
-  def bookings_to_events(bookings, %Service{} = service) do
+  def bookings_to_events(bookings, service, tz \\ site_tz())
+
+  def bookings_to_events(bookings, %Service{} = service, tz) do
     pooled = service.seats > 1
     before_s = service.buffer_before * 60
     after_s = service.buffer_after * 60
@@ -238,8 +258,8 @@ defmodule PhoenixKitBookings.Engine do
       %Event{
         id: booking.uuid,
         title: "",
-        start: booking.starts_at |> utc_to_frame() |> DateTime.add(-before_s, :second),
-        end: booking.ends_at |> utc_to_frame() |> DateTime.add(after_s, :second),
+        start: booking.starts_at |> to_frame(tz) |> DateTime.add(-before_s, :second),
+        end: booking.ends_at |> to_frame(tz) |> DateTime.add(after_s, :second),
         overlap: pooled,
         status: :confirmed
       }
@@ -250,16 +270,18 @@ defmodule PhoenixKitBookings.Engine do
   Maps timed bookings onto ABSOLUTELY blocking events (`overlap: false`,
   no buffer expansion) — provider cross-service conflicts: a person can't
   be in two places regardless of the current service's seat pool.
+
+  `tz` defaults to the site's setting, as in `bookings_to_events/3`.
   """
-  def blocking_events(bookings) do
+  def blocking_events(bookings, tz \\ site_tz()) do
     bookings
     |> Enum.filter(&(Booking.active?(&1) and not is_nil(&1.starts_at)))
     |> Enum.map(fn booking ->
       %Event{
         id: booking.uuid,
         title: "",
-        start: utc_to_frame(booking.starts_at),
-        end: utc_to_frame(booking.ends_at),
+        start: to_frame(booking.starts_at, tz),
+        end: to_frame(booking.ends_at, tz),
         overlap: false,
         status: :confirmed
       }
@@ -287,6 +309,10 @@ defmodule PhoenixKitBookings.Engine do
   legacy fixed offset such as `"2"` on a site that never touched the
   picker. `"0"` when settings are unreachable (`Settings.get_setting/2`
   already answers the default then).
+
+  Every read is a settings query, so the operations that convert many
+  values (`validate_request/5`, `bookable_slots/5`) read it ONCE and pass
+  it down rather than letting `utc_to_frame/1` re-read per conversion.
   """
   @spec site_tz() :: String.t()
   def site_tz, do: PhoenixKit.Settings.get_setting("time_zone", "0")

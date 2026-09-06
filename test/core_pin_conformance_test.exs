@@ -15,24 +15,38 @@ defmodule PhoenixKitBookings.CorePinConformanceTest do
   Core 1.7 is deliberately excluded: core 2.0.0 squashed the migration chain to
   a V135 floor and this module is verified only against that baseline.
 
-  **The floor moved to 2.4 on 2026-08-14** and core 2.0–2.3 are now rejected on
-  purpose. `Service.changeset/2` calls `PhoenixKit.Utils.Slug.put_slug/3`,
-  which core did not ship until 2.4.0 — so admitting 2.0.x would let a host
-  resolve a core where every save touching `:name` raises
-  `UndefinedFunctionError`. That is the *same class* of consumer-only breakage
-  this test exists to catch, just from the opposite direction: too wide rather
-  than too narrow.
+  **The floor moved to 2.4 on 2026-08-14, then to 2.14 on 2026-09-06.** Each
+  move was the *same class* of consumer-only breakage this test exists to
+  catch, just from the opposite direction — too wide rather than too narrow:
 
-  Raising the floor is NOT the trap described above. `~> 2.4` is two-segment,
-  so it still admits every later core minor; the forbidden shape is the
-  three-segment `~> 2.4.0`, which would pin to a single minor and is still
-  rejected by the `@must_admit` entries below.
+    * **2.4.0** — `Service.changeset/2` calls
+      `PhoenixKit.Utils.Slug.put_slug/3`, absent before it, so every save
+      touching `:name` would raise `UndefinedFunctionError`.
+    * **2.13.5** — the admin filter strips render core's `<.nav_tabs>`.
+    * **2.14.1** — `Engine`'s site frame is built on
+      `Utils.Date.shift_to_offset/2` and `parse_datetime_local/2`, which
+      only became per-instant when core routed them through
+      `Utils.TimeZone`. Before that both added `offset_to_seconds/1`, which
+      was `Float.parse/1` and answered `0` for every IANA id — so on an
+      older core the frame silently collapses to UTC and the timezone fix
+      ships as a no-op. Unlike the other two this one does not raise
+      anywhere; it just quietly stores the wrong instants.
+
+  Raising the floor is NOT the trap described above. `~> 2.14` is
+  two-segment, so it still admits every later core minor; the forbidden shape
+  is the three-segment `~> 2.14.0`, which would pin to a single minor and is
+  still rejected by the `@must_admit` entries below.
+
+  The entries deliberately say nothing about `2.14.0` itself — it was
+  superseded the next day, and the assertions below encode the REQUIREMENT
+  (2.13.x and older out, every later minor in), not one requirement string's
+  exact shape.
   """
 
-  @must_admit ["2.4.0", "2.4.7", "2.5.0", "2.9.4"]
-  @must_reject ["1.7.189", "1.7.236", "2.0.0", "2.3.0", "3.0.0"]
+  @must_admit ["2.14.1", "2.15.0", "2.15.1", "2.20.0"]
+  @must_reject ["1.7.189", "1.7.236", "2.0.0", "2.3.0", "2.4.0", "2.13.9", "3.0.0"]
 
-  test "the :phoenix_kit requirement admits every core 2.4+ and nothing else" do
+  test "the :phoenix_kit requirement admits every core 2.14+ and nothing else" do
     requirement = core_requirement()
 
     assert match?({:ok, _parsed}, Version.parse_requirement(requirement)),
@@ -42,7 +56,7 @@ defmodule PhoenixKitBookings.CorePinConformanceTest do
       assert Version.match?(version, requirement),
              "`:phoenix_kit` requirement #{inspect(requirement)} rejects core #{version}. " <>
                "A pin that excludes a core minor breaks `mix deps.get` for every host " <>
-               "running this module alongside that core. Keep it a two-segment `~> 2.4`."
+               "running this module alongside that core. Keep it a two-segment `~> 2.14`."
     end
 
     for version <- @must_reject do

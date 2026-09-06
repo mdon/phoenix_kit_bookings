@@ -1,7 +1,7 @@
 defmodule PhoenixKitBookings.MixProject do
   use Mix.Project
 
-  @version "0.1.2"
+  @version "0.1.3"
   @source_url "https://github.com/BeamLabEU/phoenix_kit_bookings"
 
   def project do
@@ -82,14 +82,26 @@ defmodule PhoenixKitBookings.MixProject do
     [
       # PhoenixKit provides the Module behaviour, Settings, Scope, Activity —
       # and, since the `put_slug/3` adoption, the slug changeset glue.
-      # 2.4.0+ is REQUIRED, not preferred: `Service.changeset/2` calls
-      # `PhoenixKit.Utils.Slug.put_slug/3`, which does not exist before core
-      # 2.4.0. Under `~> 2.0` a host could resolve core 2.0–2.3 and every
-      # save touching `:name` would raise UndefinedFunctionError — in the
+      # 2.14+ is REQUIRED, not preferred. Three things this module calls only
+      # exist, or only WORK, above the floor — and all three fail in the
       # consumer's app, never in this repo's own run, because the workspace
-      # always resolves the newest core. Two-segment, so every later 2.x
-      # still satisfies it. Guarded by test/core_pin_conformance_test.exs.
-      pk_dep(:phoenix_kit, "~> 2.4"),
+      # always resolves the newest core:
+      #
+      #   * `Utils.Slug.put_slug/3` — absent before 2.4.0. Every save
+      #     touching `:name` raises UndefinedFunctionError.
+      #   * `<.nav_tabs>` in its adoptable form — 2.13.5. The admin filter
+      #     strips render an undefined component.
+      #   * `Utils.Date.shift_to_offset/2` and `parse_datetime_local/2`
+      #     resolving a zone PER INSTANT — 2.14.1, when both were routed
+      #     through `Utils.TimeZone`. Before that they added
+      #     `offset_to_seconds/1`, which was `Float.parse/1` and answered 0
+      #     for every IANA id. `Engine`'s whole frame is built on them, so
+      #     under an older core the site frame silently collapses to UTC —
+      #     the exact bug the frame rewrite exists to fix, shipped as fixed.
+      #
+      # Two-segment, so every later 2.x still satisfies it. Guarded by
+      # test/core_pin_conformance_test.exs.
+      pk_dep(:phoenix_kit, "~> 2.14"),
 
       # The booking rules engine (BookingConfig / Availability / Constraints /
       # TimeSlots) and calendar UI components.

@@ -33,7 +33,7 @@ defmodule PhoenixKitBookings do
 
   Add to your parent app's `mix.exs`:
 
-      {:phoenix_kit_bookings, "~> 0.1.2"}
+      {:phoenix_kit_bookings, "~> 0.1.3"}
 
   Run `mix deps.get`, then `mix phoenix_kit.update` to create the tables.
   The module appears in the admin sidebar and Modules page automatically.
