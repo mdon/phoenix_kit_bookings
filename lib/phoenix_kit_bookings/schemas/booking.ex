@@ -27,6 +27,8 @@ defmodule PhoenixKitBookings.Schemas.Booking do
 
   import Ecto.Changeset
 
+  alias PhoenixKitBookings.Engine
+
   @statuses ~w(pending confirmed cancelled)
   @sources ~w(public admin)
 
@@ -39,6 +41,11 @@ defmodule PhoenixKitBookings.Schemas.Booking do
 
     field(:starts_at, :utc_datetime)
     field(:ends_at, :utc_datetime)
+    # The site's zone value when a timed booking was made (an IANA id or a
+    # legacy offset, as core keeps it), so the wall clock the customer picked
+    # can be re-resolved on its own. Nil on day/night bookings (dates carry
+    # no zone) and on rows written before the column existed.
+    field(:time_zone, :string)
     field(:starts_on, :date)
     field(:ends_on, :date)
 
@@ -100,6 +107,8 @@ defmodule PhoenixKitBookings.Schemas.Booking do
     changeset
     |> put_change(:starts_at, DateTime.truncate(starts_at, :second))
     |> put_change(:ends_at, DateTime.truncate(ends_at, :second))
+    |> put_change(:time_zone, Engine.site_tz())
+    |> validate_length(:time_zone, max: 64)
   end
 
   defp put_range(changeset, {:dates, %Date{} = starts_on, %Date{} = ends_on}) do

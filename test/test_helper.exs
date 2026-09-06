@@ -70,7 +70,10 @@ repo_available =
       # way `mix phoenix_kit.update` would in a real host app.
       Ecto.Migrator.run(
         PhoenixKitBookings.Test.Repo,
-        [{1, PhoenixKitBookings.Test.SchemaMigration}],
+        [
+          {1, PhoenixKitBookings.Test.SchemaMigration},
+          {2, PhoenixKitBookings.Test.SchemaMigrationV2}
+        ],
         :up,
         all: true,
         log: false
