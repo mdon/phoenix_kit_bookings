@@ -256,10 +256,9 @@ PHOENIX_LIVE_CALENDAR_PATH=../phoenix_live_calendar mix test
 
 ### Landmines
 
-- `config/test.exs` defaults `PGUSER` to `postgres`. On a machine without
-  that role (the Mac's brew Postgres uses `maxdon`) the DB probe fails and
-  the whole `:integration` set is excluded behind a banner while the run
-  stays green; export `PGUSER` and check the banner is absent.
+- A DB the probe cannot reach excludes the whole `:integration` set behind a
+  banner while the run stays GREEN. Check the banner is absent before reading
+  a pass as meaningful.
 - `Swoosh.TestAssertions.assert_email_sent` pops the mailbox IN ORDER:
   consume the confirmation before asserting the cancellation or reminder.
 - `Scope.can?/2` gates on module enablement, so `bookings_enabled` must be
