@@ -47,6 +47,8 @@ defmodule PhoenixKitBookings do
 
   use PhoenixKit.Module
 
+  @version Mix.Project.config()[:version]
+
   alias PhoenixKit.Dashboard.Tab
   alias PhoenixKit.Settings
 
@@ -95,13 +97,8 @@ defmodule PhoenixKitBookings do
   # ===========================================================================
 
   @impl PhoenixKit.Module
-  @doc "Version string (from mix.exs via the app spec, so it can't drift)."
-  def version do
-    case Application.spec(:phoenix_kit_bookings, :vsn) do
-      nil -> "dev"
-      vsn -> to_string(vsn)
-    end
-  end
+  @doc "Version string, single-sourced from `mix.exs` at compile time."
+  def version, do: @version
 
   @impl PhoenixKit.Module
   @doc """
